@@ -1,7 +1,9 @@
-# Records order-book / funding / open-interest snapshots for the SignalPilot research test (see the app repo's `npm run research`).
-# A job runs ~55 minutes and samples every 5 minutes; a new one is queued every 30 minutes so coverage is nearly continuous even when
-# GitHub delays a scheduled start. Data is pushed at least every 15 minutes, and also when the job is cancelled or times out.
-name: Collect market snapshots
+# Records order-book snapshots every 5 minutes and crypto headlines every 20 minutes for the SignalPilot research test (see the app repo's
+# `npm run research`). A job runs ~55 minutes, saves its data to this repo at least every 15 minutes (and when cancelled or timed out), and
+# then STARTS THE NEXT RUN ITSELF, so collection does not depend on GitHub's scheduler (which can be hours late or silent on a new repo).
+# The 30-minute schedule stays as a backup that restarts the chain if it ever breaks. Runs queue (one at a time), so nothing overlaps.
+# The chain stops on COLLECT_UNTIL (research needs weeks, not forever); push a later date to extend it, or run this workflow by hand.
+name: Collect market data
 
 on:
   schedule:
@@ -14,29 +16,53 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: collect
   cancel-in-progress: false
+
+env:
+  COLLECT_UNTIL: '2026-11-03T00:00:00Z'
 
 jobs:
   collect:
     runs-on: ubuntu-latest
     timeout-minutes: 62
     steps:
+      - name: Stop after the end date (scheduled backup runs only; a manual run always works)
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%s)" -ge "$(date -u -d "$COLLECT_UNTIL" +%s)" ]; then
+            echo "past $COLLECT_UNTIL: not collecting"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
       - uses: actions/setup-node@v4
+        if: steps.gate.outputs.skip != 'true'
         with:
           node-version: 22
       - name: Git identity
+        if: steps.gate.outputs.skip != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - name: Collect (saves to the repo every 15 minutes)
-        run: node collect.mjs --save --minutes=${{ inputs.minutes || '55' }}
+        if: steps.gate.outputs.skip != 'true'
+        run: node collect.mjs --save --news --minutes=${{ inputs.minutes || '55' }}
       - name: Final save (also after a cancel or timeout)
-        if: always()
+        if: always() && steps.gate.outputs.skip != 'true'
         run: |
-          git add book
-          git diff --cached --quiet || git commit -qm "snapshots $(date -u +%FT%TZ)"
+          git add book news
+          git diff --cached --quiet || git commit -qm "data $(date -u +%FT%TZ)"
           for i in 1 2 3; do git pull -q --rebase origin main && git push -q origin HEAD:main && break; sleep 5; done
+      - name: Start the next run (until COLLECT_UNTIL)
+        if: always() && steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%s)" -lt "$(date -u -d "$COLLECT_UNTIL" +%s)" ]; then
+            gh workflow run collect.yml --repo "$GITHUB_REPOSITORY" -f minutes=55
+          else
+            echo "reached $COLLECT_UNTIL: the chain ends here"
+          fi

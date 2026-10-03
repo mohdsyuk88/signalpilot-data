@@ -10,6 +10,7 @@ const FAPI = 'https://fapi.binance.com';
 const minutes = Number(process.argv.find((a) => a.startsWith('--minutes='))?.slice(10) ?? 55);
 const STEP = 300000;
 const SAVE = process.argv.includes('--save'); // commit + push the new data every 15 minutes (used in CI)
+const NEWS = process.argv.includes('--news'); // also record headlines (news.mjs) at the start and every 20 minutes, so one job keeps both going
 
 const get = async (url) => {
   const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
@@ -62,8 +63,15 @@ function save() {
   for (let i = 0; i < 3; i++) if (git('pull', '-q', '--rebase', 'origin', 'main') && git('push', '-q', 'origin', 'HEAD:main')) break;
 }
 
+/** Records headlines with news.mjs (it saves them itself when run with --save). */
+function news() {
+  if (!NEWS) return;
+  spawnSync('node', ['news.mjs', ...(SAVE ? ['--save'] : [])], { stdio: 'inherit' });
+}
+
 const stop = Date.now() + minutes * 60000;
 let rounds = 0;
+news();
 await once();
 while (true) {
   const next = Date.now() - (Date.now() % STEP) + STEP + 2000; // just after each 5-minute boundary
@@ -71,5 +79,6 @@ while (true) {
   await new Promise((r) => setTimeout(r, next - Date.now()));
   await once().catch((e) => console.error(String(e)));
   if (++rounds % 3 === 0) save();
+  if (rounds % 4 === 0) news();
 }
 save();
