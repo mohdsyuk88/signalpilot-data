@@ -1,0 +1,42 @@
+# Records order-book / funding / open-interest snapshots for the SignalPilot research test (see the app repo's `npm run research`).
+# A job runs ~55 minutes and samples every 5 minutes; a new one is queued every 30 minutes so coverage is nearly continuous even when
+# GitHub delays a scheduled start. Data is pushed at least every 15 minutes, and also when the job is cancelled or times out.
+name: Collect market snapshots
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'How long to collect (minutes)'
+        default: '55'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 62
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Collect (saves to the repo every 15 minutes)
+        run: node collect.mjs --save --minutes=${{ inputs.minutes || '55' }}
+      - name: Final save (also after a cancel or timeout)
+        if: always()
+        run: |
+          git add book
+          git diff --cached --quiet || git commit -qm "snapshots $(date -u +%FT%TZ)"
+          for i in 1 2 3; do git pull -q --rebase origin main && git push -q origin HEAD:main && break; sleep 5; done
